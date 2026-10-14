@@ -1,0 +1,45 @@
+# Installed into a member's <login>/<login> repo by scripts/github-profile/install.ts in ecogpt-mono.
+# Redraws the profile images every six hours and whenever profile.json or the kit changes.
+name: eco profile
+
+on:
+  schedule:
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [profile.json, .eco/**, .github/workflows/eco-profile.yml]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: eco-profile
+  cancel-in-progress: true
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Render
+        run: node .eco/render.mjs
+        env:
+          LOGIN: ${{ github.repository_owner }}
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Publish images to the output branch
+        working-directory: dist
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          git init -q -b output
+          git add .
+          git -c user.name=eco-profile -c user.email=eco-profile@users.noreply.github.com commit -qm "Render profile images"
+          git push -qf "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" output
+      - name: Commit the README when it changed
+        run: |
+          if git diff --quiet README.md && git ls-files --error-unmatch README.md >/dev/null 2>&1; then exit 0; fi
+          git add README.md
+          git -c user.name=eco-profile -c user.email=eco-profile@users.noreply.github.com commit -qm "Update profile README"
+          git push -q

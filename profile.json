@@ -1,0 +1,23 @@
+{
+  "name": "Blake",
+  "intro": [
+    "I'm working on [EcoGPT](https://ecogpt.com). We're building a playground for your ideas.",
+    "Our mission is to build AI tools that help people create, learn, and have fun."
+  ],
+  "socials": {
+    "x": "blakeandersonw",
+    "instagram": "wilder",
+    "linkedin": "blakeandersonw"
+  },
+  "sections": {
+    "Experience": [
+      "Co-founder @ [EcoGPT](https://ecogpt.com) (6M users, 425k trees planted)",
+      "Co-founder @ [Cal AI](https://calai.app) (20M users, $100M revenue)"
+    ],
+    "Accomplishments": [
+      "Forbes 30 Under 30",
+      "Z Fellows",
+      "CS + Finance @ Tulane '23"
+    ]
+  }
+}

@@ -1,0 +1,292 @@
+// Draws an Eco team member's GitHub profile: the README from profile.json, and its images
+// (social pills, the tree snake, the apply button, the team's solar system) in light and dark.
+// Runs in the member's <login>/<login> repo as .eco/render.mjs; `scripts/github-profile/install.ts`
+// copies it there. Node 20+, no dependencies.
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+
+const KIT = new URL("./", import.meta.url);
+const LOGIN = process.env.LOGIN;
+const TOKEN = process.env.GITHUB_TOKEN;
+const OUT = "dist";
+if (!LOGIN || !TOKEN) throw new Error("LOGIN and GITHUB_TOKEN are required");
+
+const RAW = `https://raw.githubusercontent.com/${LOGIN}/${LOGIN}/output`;
+const FONT = `'Google Sans Flex','Google Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif`;
+const THEMES = {
+  light: { card: "#fbfcfd", ink: "#172c33", muted: "#596a76", line: "#172c33", lineOp: 0.09, soil: "#e6edf1", snakeEdge: 0.14 },
+  dark: { card: "#111821", ink: "#eef3f6", muted: "#9aabb6", line: "#ffffff", lineOp: 0.08, soil: "#1d2632", snakeEdge: 0 },
+};
+const fmt = (n) => n.toLocaleString("en-US");
+const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const svg = (w, h, label, body, viewBox = `0 0 ${w} ${h}`) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="${viewBox}" font-family="${FONT}" role="img" aria-label="${esc(label)}">${body}</svg>`;
+
+// ---- Data -------------------------------------------------------------------------------------
+
+async function github(query, variables) {
+  const res = await fetch("https://api.github.com/graphql", {
+    method: "POST",
+    headers: { authorization: `bearer ${TOKEN}`, "content-type": "application/json" },
+    body: JSON.stringify({ query, variables }),
+  });
+  const body = await res.json();
+  if (!res.ok || body.errors) throw new Error(`GitHub GraphQL failed: ${JSON.stringify(body.errors ?? body)}`);
+  return body.data;
+}
+
+const LEVELS = { NONE: 0, FIRST_QUARTILE: 1, SECOND_QUARTILE: 2, THIRD_QUARTILE: 3, FOURTH_QUARTILE: 4 };
+async function calendar(login) {
+  const data = await github(
+    `query($login: String!) { user(login: $login) { contributionsCollection { contributionCalendar {
+      totalContributions weeks { contributionDays { date weekday contributionCount contributionLevel } } } } } }`,
+    { login },
+  );
+  const cal = data.user.contributionsCollection.contributionCalendar;
+  const days = cal.weeks.flatMap((w, col) =>
+    w.contributionDays.map((d) => ({ date: d.date, col, row: d.weekday, count: d.contributionCount, level: LEVELS[d.contributionLevel] ?? 0 })),
+  );
+  return { total: cal.totalContributions, days, cols: cal.weeks.length };
+}
+
+async function dataUri(url, type) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Fetch ${url} failed: ${res.status}`);
+  return `data:${type ?? res.headers.get("content-type") ?? "image/png"};base64,${Buffer.from(await res.arrayBuffer()).toString("base64")}`;
+}
+
+// ---- Tree snake -------------------------------------------------------------------------------
+
+// Canopy colours by month, light to shade: winter frost, spring fresh, summer Eco green, autumn sunlight.
+const FROST = ["#f4f9fc", "#cfe3ec", "#8fb3c4"], SPRING = ["#d4f7c4", "#93e07f", "#56b85a"], SUMMER = ["#a6ee9c", "#4ecc54", "#2a9a3a"];
+const CANOPY = {
+  1: FROST, 2: FROST, 3: SPRING, 4: SPRING, 5: ["#bff0ae", "#78d86a", "#3fae4d"], 6: SUMMER, 7: SUMMER, 8: SUMMER,
+  9: ["#ecf7a0", "#bcd84c", "#7fae2a"], 10: ["#ffe08a", "#ffae19", "#e07b10"], 11: ["#ffc59a", "#f0743a", "#c24a1e"], 12: FROST,
+};
+// The snake wears the trees' spectrum: autumn head, frost body, green tail.
+const SNAKE = ["#e8622c", "#f0743a", "#ff9a2e", "#ffae19", "#ffd27a", "#f4f9fc", "#e3eef4", "#cfe3ec", "#a6ee9c", "#78d86a", "#4ecc54", "#2a9a3a"];
+
+// One round tree per month in a 20×20 box: soft shadow, trunk, three-lobe canopy lit from the upper left.
+const treeDefs = () =>
+  Object.entries(CANOPY).map(([m, [hi, base, lo]]) => `
+    <radialGradient id="g${m}" gradientUnits="userSpaceOnUse" cx="7.4" cy="4.6" r="11.5"><stop offset="0" stop-color="${hi}"/><stop offset=".45" stop-color="${base}"/><stop offset="1" stop-color="${lo}"/></radialGradient>
+    <symbol id="t${m}" viewBox="0 0 20 20">
+      <ellipse cx="10" cy="18.6" rx="5.2" ry="1.2" fill="#0b1720" opacity=".14"/>
+      <rect x="8.9" y="11" width="2.2" height="7.6" rx="1.1" fill="#b98a5e"/>
+      <circle cx="6.4" cy="11" r="4.1" fill="url(#g${m})"/><circle cx="13.6" cy="11" r="4.1" fill="url(#g${m})"/><circle cx="10" cy="7.4" r="5.6" fill="url(#g${m})"/>
+      <ellipse cx="8" cy="5.2" rx="2" ry="1.2" fill="#fff" opacity=".45" transform="rotate(-25 8 5.2)"/>
+    </symbol>`).join("");
+
+// Grid steps from a to b: across first, then up or down, one cell at a time.
+function walk([c, r], [tc, tr]) {
+  const out = [];
+  while (c !== tc) { c += Math.sign(tc - c); out.push([c, r]); }
+  while (r !== tr) { r += Math.sign(tr - r); out.push([c, r]); }
+  return out;
+}
+
+// The snake enters mid-left and always goes for the nearest tree; it eats the forest, which then regrows.
+function snakeSVG({ days, cols, total }, theme) {
+  const t = THEMES[theme];
+  const S = 15.5, W = 880, x0 = (W - cols * S) / 2, y0 = 20, H = y0 + 7 * S + 38;
+  const center = (c, r) => [x0 + c * S + S / 2, y0 + r * S + S / 2];
+
+  const left = new Map(days.filter((d) => d.count > 0).map((d) => [`${d.col},${d.row}`, d]));
+  let pos = [-1, 3];
+  const steps = [[-3, 3], ...walk([-3, 3], pos)];
+  const eatenAt = new Map();
+  while (left.size > 0) {
+    let best, bestDist = Infinity;
+    for (const d of left.values()) {
+      const dist = Math.abs(d.col - pos[0]) + Math.abs(d.row - pos[1]);
+      if (dist < bestDist || (dist === bestDist && d.col < best.col)) { bestDist = dist; best = d; }
+    }
+    steps.push(...walk(pos, [best.col, best.row]));
+    pos = [best.col, best.row];
+    eatenAt.set(best, steps.length - 1);
+    left.delete(`${best.col},${best.row}`);
+  }
+  steps.push(...walk(pos, [cols + 6, pos[1]]));
+
+  const travel = 0.86, T = steps.length / 22 / travel;
+  const at = (k) => (k / (steps.length - 1)) * travel * 100;
+  const path = steps.map(([c, r], i) => `${i === 0 ? "M" : "L"}${center(c, r).map((v) => v.toFixed(1)).join(",")}`).join(" ");
+
+  let ground = "", trees = "", keys = "";
+  for (const { col, row } of days) {
+    const [x, y] = center(col, row);
+    ground += `<ellipse cx="${x}" cy="${y + 5}" rx="4.4" ry="2" fill="${t.soil}"/>`;
+  }
+  // Trees paint top row first so lower rows overlap them. Each is eaten when the head arrives,
+  // then the forest regrows in a wave from left to right before the loop starts again.
+  const grown = [...eatenAt.keys()].sort((a, b) => a.row - b.row || a.col - b.col);
+  for (const d of grown) {
+    const k = eatenAt.get(d), [x, y] = center(d.col, d.row);
+    const h = [0, 13, 15, 17, 19.5][d.level || 1], base = y + 6.5;
+    const a = at(k), back = 90 + (d.col / cols) * 7;
+    keys += `@keyframes e${k}{0%,${a.toFixed(2)}%{transform:scale(1)}${(a + 0.5).toFixed(2)}%,${back.toFixed(2)}%{transform:scale(0)}${(back + 1.6).toFixed(2)}%{transform:scale(1.15)}${(back + 2.4).toFixed(2)}%,100%{transform:scale(1)}}`;
+    trees += `<use href="#t${+d.date.slice(5, 7)}" x="${(x - h / 2).toFixed(1)}" y="${(base - h).toFixed(1)}" width="${h}" height="${h}" style="transform-origin:${x.toFixed(1)}px ${base}px;animation:e${k} ${T.toFixed(2)}s linear infinite"/>`;
+  }
+  const cell = (T * travel) / (steps.length - 1);
+  const edge = t.snakeEdge > 0 ? ` stroke="#172c33" stroke-opacity="${t.snakeEdge}" stroke-width=".8"` : "";
+  const snake = SNAKE.map((fill, j) => `
+    <circle r="${(5.6 - j * 0.22).toFixed(2)}" fill="${fill}"${edge}>
+      <animateMotion dur="${T.toFixed(2)}s" repeatCount="indefinite" begin="${(j * cell * 0.55).toFixed(3)}s" path="${path}" keyPoints="0;1;1" keyTimes="0;${travel};1" calcMode="linear"/>
+    </circle>`).reverse().join("");
+
+  return svg(W, H, `${fmt(grown.length)} trees grown from ${fmt(total)} contributions`, `
+    <defs>${treeDefs()}<clipPath id="field"><rect width="${W}" height="${H}" rx="16"/></clipPath></defs>
+    <style>${keys}</style>
+    <rect width="${W}" height="${H}" rx="16" fill="${t.card}"/>
+    <g clip-path="url(#field)">${ground}${trees}${snake}</g>
+    <rect x=".5" y=".5" width="${W - 1}" height="${H - 1}" rx="15.5" fill="none" stroke="${t.line}" stroke-opacity="${t.lineOp}"/>
+    <text x="${x0 + 4}" y="${H - 13}" font-size="13" fill="${t.muted}"><tspan font-weight="650" fill="${t.ink}">${fmt(grown.length)} trees</tspan> grown from ${fmt(total)} contributions</text>`);
+}
+
+// ---- Pills ------------------------------------------------------------------------------------
+
+// Rough advance widths (em) for the fallback sans; textLength then pins the text to exactly this width.
+function textWidth(text, size) {
+  let em = 0;
+  for (const ch of text) {
+    if ("ijl.,:;'|!".includes(ch)) em += 0.26;
+    else if ("ftrI()[]".includes(ch)) em += 0.36;
+    else if ("mwMW@".includes(ch)) em += 0.86;
+    else if (ch === " ") em += 0.28;
+    else if (ch >= "A" && ch <= "Z") em += 0.68;
+    else em += 0.56;
+  }
+  return Math.ceil(em * size);
+}
+
+const ICONS = {
+  x: `<path fill="currentColor" d="M18.9 1.15h3.68l-8.04 9.19L24 22.85h-7.4l-5.8-7.59-6.64 7.59H.47l8.6-9.83L0 1.15h7.59l5.25 6.93ZM17.61 20.64h2.04L6.49 3.24H4.3Z"/>`,
+  instagram: `<g fill="none" stroke="currentColor" stroke-width="2.1"><rect x="2.5" y="2.5" width="19" height="19" rx="5.5"/><circle cx="12" cy="12" r="4.4"/></g><circle cx="17.6" cy="6.4" r="1.2" fill="currentColor"/>`,
+  linkedin: `<path fill="currentColor" d="M20.45 20.45h-3.55v-5.57c0-1.33-.03-3.04-1.85-3.04-1.86 0-2.14 1.45-2.14 2.94v5.67H9.35V9h3.41v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.28ZM5.34 7.43a2.06 2.06 0 1 1 0-4.13 2.06 2.06 0 0 1 0 4.13Zm1.78 13.02H3.56V9h3.56v11.45ZM22.23 0H1.77C.79 0 0 .77 0 1.73v20.54C0 23.23.79 24 1.77 24h20.45c.98 0 1.78-.77 1.78-1.73V1.73C24 .77 23.2 0 22.22 0Z"/>`,
+};
+const SOCIALS = {
+  x: { label: "X", url: (h) => `https://x.com/${h}`, text: (h) => `@${h}` },
+  instagram: { label: "Instagram", url: (h) => `https://instagram.com/${h}`, text: (h) => `@${h}` },
+  linkedin: { label: "LinkedIn", url: (h) => `https://linkedin.com/in/${h}`, text: (h) => h },
+};
+
+function pill(theme, lead, text, label, weight = 550) {
+  const t = THEMES[theme], tw = textWidth(text, 14), H = 36, W = 12 + 16 + 8 + tw + 15;
+  return svg(W, H, label, `
+    <rect x=".5" y=".5" width="${W - 1}" height="${H - 1}" rx="17.5" fill="${t.card}" stroke="${t.line}" stroke-opacity="${t.lineOp}"/>
+    <g transform="translate(12 10)" color="${t.ink}">${lead}</g>
+    <text x="36" y="23" font-size="14" font-weight="${weight}" fill="${t.ink}" textLength="${tw}" lengthAdjust="spacing">${esc(text)}</text>`);
+}
+const socialPill = (theme, key, handle) => pill(theme, `<svg width="16" height="16" viewBox="0 0 24 24">${ICONS[key]}</svg>`, SOCIALS[key].text(handle), `${SOCIALS[key].label} ${SOCIALS[key].text(handle)}`);
+const applyPill = (theme) => pill(theme, `<circle cx="8" cy="8" r="8" fill="#ffae19" opacity=".22"/><circle cx="8" cy="8" r="4" fill="#ffae19"/>`, "Apply to join the Eco team  →", "Apply to join the Eco team", 600);
+
+// ---- The team's solar system ------------------------------------------------------------------
+
+// Dark is deep space; light is the same system lit by day. Drawn as one scene, cut into one slice
+// per member so each planet links to its owner.
+const SCENE = { W: 880, H: 240, sunX: -84, cy: 104 };
+const SKY = {
+  dark: { space: ["#0b1330", "#070b1d", "#050816"], blue: 0.28, green: 0.14, star: "#fff", starMax: 0.7, glow: 0.35,
+    orbit: "#fff", orbitOp: 0.2, halo: "#9fd0ff", haloOp: 0.18, ring: "#0a1022", text: "#fff", label: 0.55 },
+  light: { space: ["#fff6e2", "#f3f8fd", "#e6f1fc"], blue: 0.16, green: 0.1, star: "#1e88fd", starMax: 0.35, glow: 0.45,
+    orbit: "#172c33", orbitOp: 0.18, halo: "#ffffff", haloOp: 0.7, ring: "#ffffff", text: "#172c33", label: 0.5 },
+};
+const LIFT = [-14, 16, -12, 14, -16];
+
+function rng(seed) { return () => (seed = (seed * 16807) % 2147483647) / 2147483647; }
+
+function teamSlice(team, i, theme) {
+  const { W, H, sunX, cy } = SCENE, k = SKY[theme], tile = W / team.length, x0 = tile * i, x1 = x0 + tile;
+  const placed = team.map((m, j) => {
+    const x = tile * j + tile / 2, y = cy + LIFT[j % LIFT.length];
+    return { ...m, x, y, R: Math.hypot(x - sunX, y - cy) };
+  });
+  const r = rng(7);
+  let stars = "";
+  for (let s = 0; s < 140; s++) {
+    const x = r() * W, y = r() * H, size = 0.35 + r() * 0.95, op = 0.25 + r() * k.starMax, twinkles = r() < 0.22, delay = -r() * 5;
+    if (x < x0 - 3 || x > x1 + 3) continue;
+    stars += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${size.toFixed(2)}" fill="${k.star}" opacity="${op.toFixed(2)}"${twinkles ? ` class="tw" style="animation-delay:${delay.toFixed(2)}s"` : ""}/>`;
+  }
+  const orbits = placed.map(({ R }) => `<circle cx="${sunX}" cy="${cy}" r="${R.toFixed(1)}" fill="none" stroke="${k.orbit}" stroke-opacity="${k.orbitOp}" stroke-dasharray="1.5 6"/>`).join("");
+  const m = placed[i], isMe = m.login === LOGIN;
+  const [w, h] = m.planet === "saturn" ? [84, 54] : [58, 58];
+  const sun = i === 0 ? `<circle class="pulse" cx="${sunX}" cy="${cy}" r="260" fill="url(#glow)"/><circle cx="${sunX}" cy="${cy}" r="132" fill="url(#sun)"/>` : "";
+  const label = i === team.length - 1 ? `<text x="${W - 24}" y="${H - 18}" text-anchor="end" font-size="11" font-weight="650" letter-spacing="2" fill="${k.text}" fill-opacity="${k.label}">THE ECO TEAM</text>` : "";
+  return svg(tile, H, m.name, `
+    <defs>
+      <linearGradient id="space" x1="0" y1="0" x2="${W}" y2="${H}" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="${k.space[0]}"/><stop offset=".55" stop-color="${k.space[1]}"/><stop offset="1" stop-color="${k.space[2]}"/></linearGradient>
+      <radialGradient id="nebulaB" gradientUnits="userSpaceOnUse" cx="${W * 0.7}" cy="${H * 0.1}" r="${W * 0.45}"><stop offset="0" stop-color="#1e88fd" stop-opacity="${k.blue}"/><stop offset="1" stop-color="#1e88fd" stop-opacity="0"/></radialGradient>
+      <radialGradient id="nebulaG" gradientUnits="userSpaceOnUse" cx="${W * 0.42}" cy="${H * 1.05}" r="${W * 0.4}"><stop offset="0" stop-color="#4ecc54" stop-opacity="${k.green}"/><stop offset="1" stop-color="#4ecc54" stop-opacity="0"/></radialGradient>
+      <radialGradient id="sun"><stop offset="0" stop-color="#fffaf0"/><stop offset=".35" stop-color="#ffd27a"/><stop offset=".7" stop-color="#ffae19"/><stop offset="1" stop-color="#ffae19" stop-opacity="0"/></radialGradient>
+      <radialGradient id="glow"><stop offset="0" stop-color="#ffae19" stop-opacity="${k.glow}"/><stop offset="1" stop-color="#ffae19" stop-opacity="0"/></radialGradient>
+      <radialGradient id="halo"><stop offset=".55" stop-color="${k.halo}" stop-opacity="${k.haloOp}"/><stop offset="1" stop-color="${k.halo}" stop-opacity="0"/></radialGradient>
+      <clipPath id="card"><rect width="${W}" height="${H}" rx="16"/></clipPath>
+      <clipPath id="face"><circle cx="${m.x + 23}" cy="${m.y + 21}" r="14"/></clipPath>
+    </defs>
+    <style>
+      .float { animation: float 7s ease-in-out infinite; }
+      @keyframes float { 0%, 100% { transform: translateY(0) } 50% { transform: translateY(-5px) } }
+      .tw { animation: tw 3.4s ease-in-out infinite; }
+      @keyframes tw { 0%, 100% { opacity: .15 } 50% { opacity: 1 } }
+      .pulse { animation: pulse 6s ease-in-out infinite; transform-origin: ${sunX}px ${cy}px; }
+      @keyframes pulse { 0%, 100% { transform: scale(1) } 50% { transform: scale(1.05) } }
+    </style>
+    <g clip-path="url(#card)">
+      <rect width="${W}" height="${H}" fill="url(#space)"/><rect width="${W}" height="${H}" fill="url(#nebulaB)"/><rect width="${W}" height="${H}" fill="url(#nebulaG)"/>
+      ${stars}${sun}${orbits}${label}
+      <g class="float" style="animation-delay:${-i * 1.4}s">
+        <circle cx="${m.x}" cy="${m.y}" r="${h * 0.62}" fill="url(#halo)"/>
+        <image href="${m.planetUri}" x="${m.x - w / 2}" y="${m.y - h / 2}" width="${w}" height="${h}"/>
+        <circle cx="${m.x + 23}" cy="${m.y + 21}" r="16.5" fill="${k.ring}"/>
+        <image href="${m.avatarUri}" x="${m.x + 9}" y="${m.y + 7}" width="28" height="28" clip-path="url(#face)"/>
+        <text x="${m.x}" y="${m.y + 58}" text-anchor="middle" font-size="13.5" font-weight="${isMe ? 700 : 550}" fill="${k.text}" fill-opacity="${isMe ? 1 : 0.86}">${esc(m.name)}</text>
+      </g>
+    </g>
+    <rect x=".5" y=".5" width="${W - 1}" height="${H - 1}" rx="15.5" fill="none" stroke="${THEMES[theme].line}" stroke-opacity="${THEMES[theme].lineOp}"/>`,
+  `${x0} 0 ${tile} ${H}`);
+}
+
+// ---- README -----------------------------------------------------------------------------------
+
+const picture = (name, alt, attrs) =>
+  `<picture><source media="(prefers-color-scheme: dark)" srcset="${RAW}/${name}-dark.svg"><img alt="${esc(alt)}" src="${RAW}/${name}-light.svg" ${attrs}></picture>`;
+const linked = (href, inner) => `<a href="${esc(href)}">${inner}</a>`;
+
+function readme(profile, team, socials) {
+  const lines = [`<!-- Generated by .eco/render.mjs from profile.json. Edit profile.json, not this file. -->`, ""];
+  if (profile.name) lines.push(`# Hey, I'm ${profile.name} 👋`, "");
+  for (const p of profile.intro ?? []) lines.push(p, "");
+  if (socials.length > 0) {
+    lines.push(`<p>${socials.map(([key, handle]) => linked(SOCIALS[key].url(handle), picture(`social-${key}`, `${SOCIALS[key].label} ${SOCIALS[key].text(handle)}`, `height="36"`))).join("\n")}</p>`, "");
+  }
+  for (const [title, items] of Object.entries(profile.sections ?? {})) {
+    if (items.length === 0) continue;
+    lines.push(`### ${title}`, "", ...items.map((item) => `- ${item}`), "");
+  }
+  lines.push(picture("snake", "Contribution forest", `width="100%"`), "");
+  lines.push(`<p>${linked("https://ecogpt.com/careers", picture("apply", "Apply to join the Eco team", `height="36"`))}</p>`, "");
+  // One line, no whitespace between slices, so they sit edge to edge as one scene.
+  lines.push(`<p>${team.map((m, i) => linked(`https://github.com/${m.login}`, picture(`team-${i + 1}`, m.name, `width="${100 / team.length}%"`))).join("")}</p>`, "");
+  return lines.join("\n");
+}
+
+// ---- Main -------------------------------------------------------------------------------------
+
+const profile = JSON.parse(await readFile("profile.json", "utf8"));
+const team = JSON.parse(await readFile(new URL("team.json", KIT), "utf8"));
+const socials = Object.entries(profile.socials ?? {}).filter(([key, handle]) => key in SOCIALS && handle !== "");
+const cal = await calendar(LOGIN);
+for (const m of team) {
+  m.planetUri = `data:image/png;base64,${(await readFile(new URL(`planets/${m.planet}.png`, KIT))).toString("base64")}`;
+  m.avatarUri = await dataUri(`https://github.com/${m.login}.png?size=64`);
+}
+
+await mkdir(OUT, { recursive: true });
+for (const theme of ["light", "dark"]) {
+  await writeFile(`${OUT}/snake-${theme}.svg`, snakeSVG(cal, theme));
+  await writeFile(`${OUT}/apply-${theme}.svg`, applyPill(theme));
+  for (const [key, handle] of socials) await writeFile(`${OUT}/social-${key}-${theme}.svg`, socialPill(theme, key, handle));
+  for (let i = 0; i < team.length; i++) await writeFile(`${OUT}/team-${i + 1}-${theme}.svg`, teamSlice(team, i, theme));
+}
+await writeFile("README.md", readme(profile, team, socials));
+console.log(`Rendered ${LOGIN}: ${fmt(cal.total)} contributions, ${team.length} teammates, ${socials.length} socials.`);
