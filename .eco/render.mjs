@@ -13,23 +13,23 @@ if (!LOGIN || !TOKEN) throw new Error('LOGIN and GITHUB_TOKEN are required');
 const RAW = `https://raw.githubusercontent.com/${LOGIN}/${LOGIN}/output`;
 const FONT = `'Google Sans Flex','Google Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif`;
 const THEMES = {
-	light: {
-		card: '#fbfcfd',
-		ink: '#172c33',
-		muted: '#596a76',
-		line: '#172c33',
-		lineOp: 0.09,
-		soil: '#e6edf1',
-		snakeEdge: 0.14,
-	},
 	dark: {
 		card: '#111821',
 		ink: '#eef3f6',
-		muted: '#9aabb6',
 		line: '#ffffff',
 		lineOp: 0.08,
-		soil: '#1d2632',
+		muted: '#9aabb6',
 		snakeEdge: 0,
+		soil: '#1d2632',
+	},
+	light: {
+		card: '#fbfcfd',
+		ink: '#172c33',
+		line: '#172c33',
+		lineOp: 0.09,
+		muted: '#596a76',
+		snakeEdge: 0.14,
+		soil: '#e6edf1',
 	},
 };
 const fmt = (n) => n.toLocaleString('en-US');
@@ -46,9 +46,9 @@ const svg = (w, h, label, body, viewBox = `0 0 ${w} ${h}`) =>
 
 async function github(query, variables) {
 	const res = await fetch('https://api.github.com/graphql', {
-		method: 'POST',
-		headers: { authorization: `bearer ${TOKEN}`, 'content-type': 'application/json' },
 		body: JSON.stringify({ query, variables }),
+		headers: { authorization: `bearer ${TOKEN}`, 'content-type': 'application/json' },
+		method: 'POST',
 	});
 	const body = await res.json();
 	if (!res.ok || body.errors)
@@ -57,11 +57,11 @@ async function github(query, variables) {
 }
 
 const LEVELS = {
-	NONE: 0,
 	FIRST_QUARTILE: 1,
+	FOURTH_QUARTILE: 4,
+	NONE: 0,
 	SECOND_QUARTILE: 2,
 	THIRD_QUARTILE: 3,
-	FOURTH_QUARTILE: 4,
 };
 async function calendar(login) {
 	const data = await github(
@@ -72,14 +72,20 @@ async function calendar(login) {
 	const cal = data.user.contributionsCollection.contributionCalendar;
 	const days = cal.weeks.flatMap((w, col) =>
 		w.contributionDays.map((d) => ({
-			date: d.date,
 			col,
-			row: d.weekday,
 			count: d.contributionCount,
+			date: d.date,
 			level: LEVELS[d.contributionLevel] ?? 0,
+			row: d.weekday,
 		})),
 	);
-	return { total: cal.totalContributions, days, cols: cal.weeks.length };
+	return { cols: cal.weeks.length, days, total: cal.totalContributions };
+}
+
+async function dataUri(url, type) {
+	const res = await fetch(url);
+	if (!res.ok) throw new Error(`Fetch ${url} failed: ${res.status}`);
+	return `data:${type ?? res.headers.get('content-type') ?? 'image/png'};base64,${Buffer.from(await res.arrayBuffer()).toString('base64')}`;
 }
 
 // Consecutive days with a contribution, ending today, or yesterday when today has none yet.
@@ -89,12 +95,6 @@ function streak(days) {
 	if (i >= 0 && days[i].count === 0) i--;
 	for (; i >= 0 && days[i].count > 0; i--) n++;
 	return n;
-}
-
-async function dataUri(url, type) {
-	const res = await fetch(url);
-	if (!res.ok) throw new Error(`Fetch ${url} failed: ${res.status}`);
-	return `data:${type ?? res.headers.get('content-type') ?? 'image/png'};base64,${Buffer.from(await res.arrayBuffer()).toString('base64')}`;
 }
 
 // ---- Tree snake -------------------------------------------------------------------------------
@@ -148,28 +148,14 @@ const treeDefs = () =>
 		)
 		.join('');
 
-// Grid steps from a to b: across first, then up or down, one cell at a time.
-function walk([c, r], [tc, tr]) {
-	const out = [];
-	while (c !== tc) {
-		c += Math.sign(tc - c);
-		out.push([c, r]);
-	}
-	while (r !== tr) {
-		r += Math.sign(tr - r);
-		out.push([c, r]);
-	}
-	return out;
-}
-
 // The snake enters mid-left and always goes for the nearest tree; it eats the forest, which then regrows.
-function snakeSVG({ days, cols, total }, theme) {
+function snakeSVG({ cols, days, total }, theme) {
 	const t = THEMES[theme];
 	const S = 15.5,
-		W = 880,
-		x0 = (W - cols * S) / 2,
 		y0 = 20,
-		H = y0 + 7 * S + 46;
+		H = y0 + 7 * S + 46,
+		W = 880,
+		x0 = (W - cols * S) / 2;
 	const center = (c, r) => [x0 + c * S + S / 2, y0 + r * S + S / 2];
 
 	const left = new Map(days.filter((d) => d.count > 0).map((d) => [`${d.col},${d.row}`, d]));
@@ -206,8 +192,8 @@ function snakeSVG({ days, cols, total }, theme) {
 		.join(' ');
 
 	let ground = '',
-		trees = '',
-		keys = '';
+		keys = '',
+		trees = '';
 	for (const { col, row } of days) {
 		const [x, y] = center(col, row);
 		ground += `<ellipse cx="${x}" cy="${y + 5}" rx="4.4" ry="2" fill="${t.soil}"/>`;
@@ -216,10 +202,10 @@ function snakeSVG({ days, cols, total }, theme) {
 	// then the forest regrows in a wave from left to right before the loop starts again.
 	const grown = [...eatenAt.keys()].toSorted((a, b) => a.row - b.row || a.col - b.col);
 	for (const d of grown) {
-		const k = eatenAt.get(d),
-			[x, y] = center(d.col, d.row);
-		const h = [0, 13, 15, 17, 19.5][d.level || 1],
-			base = y + 6.5;
+		const [x, y] = center(d.col, d.row),
+			k = eatenAt.get(d);
+		const base = y + 6.5,
+			h = [0, 13, 15, 17, 19.5][d.level || 1];
 		const a = at(k),
 			back = 90 + (d.col / cols) * 7;
 		keys += `@keyframes e${k}{0%,${a.toFixed(2)}%{transform:scale(1)}${(a + 0.5).toFixed(2)}%,${back.toFixed(2)}%{transform:scale(0)}${(back + 1.6).toFixed(2)}%{transform:scale(1.15)}${(back + 2.4).toFixed(2)}%,100%{transform:scale(1)}}`;
@@ -251,8 +237,6 @@ function snakeSVG({ days, cols, total }, theme) {
 	);
 }
 
-// ---- Pills ------------------------------------------------------------------------------------
-
 // Rough advance widths (em) for the fallback sans; textLength then pins the text to exactly this width.
 function textWidth(text, size) {
 	let em = 0;
@@ -268,21 +252,37 @@ function textWidth(text, size) {
 	return Math.ceil(em * size);
 }
 
+// ---- Pills ------------------------------------------------------------------------------------
+
+// Grid steps from a to b: across first, then up or down, one cell at a time.
+function walk([c, r], [tc, tr]) {
+	const out = [];
+	while (c !== tc) {
+		c += Math.sign(tc - c);
+		out.push([c, r]);
+	}
+	while (r !== tr) {
+		r += Math.sign(tr - r);
+		out.push([c, r]);
+	}
+	return out;
+}
+
 const ICONS = {
-	x: `<path fill="currentColor" d="M18.9 1.15h3.68l-8.04 9.19L24 22.85h-7.4l-5.8-7.59-6.64 7.59H.47l8.6-9.83L0 1.15h7.59l5.25 6.93ZM17.61 20.64h2.04L6.49 3.24H4.3Z"/>`,
 	instagram: `<g fill="none" stroke="currentColor" stroke-width="2.1"><rect x="2.5" y="2.5" width="19" height="19" rx="5.5"/><circle cx="12" cy="12" r="4.4"/></g><circle cx="17.6" cy="6.4" r="1.2" fill="currentColor"/>`,
 	linkedin: `<path fill="currentColor" d="M20.45 20.45h-3.55v-5.57c0-1.33-.03-3.04-1.85-3.04-1.86 0-2.14 1.45-2.14 2.94v5.67H9.35V9h3.41v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.28ZM5.34 7.43a2.06 2.06 0 1 1 0-4.13 2.06 2.06 0 0 1 0 4.13Zm1.78 13.02H3.56V9h3.56v11.45ZM22.23 0H1.77C.79 0 0 .77 0 1.73v20.54C0 23.23.79 24 1.77 24h20.45c.98 0 1.78-.77 1.78-1.73V1.73C24 .77 23.2 0 22.22 0Z"/>`,
+	x: `<path fill="currentColor" d="M18.9 1.15h3.68l-8.04 9.19L24 22.85h-7.4l-5.8-7.59-6.64 7.59H.47l8.6-9.83L0 1.15h7.59l5.25 6.93ZM17.61 20.64h2.04L6.49 3.24H4.3Z"/>`,
 };
 const SOCIALS = {
-	x: { label: 'X', url: (h) => `https://x.com/${h}`, text: (h) => `@${h}` },
-	instagram: { label: 'Instagram', url: (h) => `https://instagram.com/${h}`, text: (h) => `@${h}` },
-	linkedin: { label: 'LinkedIn', url: (h) => `https://linkedin.com/in/${h}`, text: (h) => h },
+	instagram: { label: 'Instagram', text: (h) => `@${h}`, url: (h) => `https://instagram.com/${h}` },
+	linkedin: { label: 'LinkedIn', text: (h) => h, url: (h) => `https://linkedin.com/in/${h}` },
+	x: { label: 'X', text: (h) => `@${h}`, url: (h) => `https://x.com/${h}` },
 };
 
 function pill(theme, lead, text, label, weight = 550) {
-	const t = THEMES[theme],
+	const H = 36,
+		t = THEMES[theme],
 		tw = textWidth(text, 14),
-		H = 36,
 		W = 12 + 16 + 8 + tw + 15;
 	return svg(
 		W,
@@ -314,61 +314,61 @@ const applyPill = (theme) =>
 
 // Dark is deep space; light is the same system lit by day. Drawn as one scene, cut into one slice
 // per member so each planet links to its owner.
-const SCENE = { W: 880, H: 248, sunX: -84, cy: 92 };
+const SCENE = { cy: 92, H: 248, sunX: -84, W: 880 };
 const SKY = {
 	dark: {
-		space: ['#0b1330', '#070b1d', '#050816'],
 		blue: 0.28,
-		green: 0.14,
-		star: '#fff',
-		starMax: 0.7,
-		glow: 0.35,
-		orbit: '#fff',
-		orbitOp: 0.2,
-		halo: '#9fd0ff',
-		haloOp: 0.18,
-		text: '#fff',
-		label: 0.55,
 		card: '#ffffff',
-		cardOp: 0.07,
 		cardLine: '#ffffff',
 		cardLineOp: 0.12,
+		cardOp: 0.07,
 		chip: '#ffffff',
 		chipOp: 0.1,
+		glow: 0.35,
+		green: 0.14,
+		halo: '#9fd0ff',
+		haloOp: 0.18,
+		label: 0.55,
+		orbit: '#fff',
+		orbitOp: 0.2,
+		space: ['#0b1330', '#070b1d', '#050816'],
+		star: '#fff',
+		starMax: 0.7,
 		sub: '#c9d6e3',
+		text: '#fff',
 	},
 	light: {
-		space: ['#fff6e2', '#f3f8fd', '#e6f1fc'],
 		blue: 0.16,
-		green: 0.1,
-		star: '#1e88fd',
-		starMax: 0.35,
-		glow: 0.45,
-		orbit: '#172c33',
-		orbitOp: 0.18,
-		halo: '#ffffff',
-		haloOp: 0.7,
-		text: '#172c33',
-		label: 0.5,
 		card: '#ffffff',
-		cardOp: 0.78,
 		cardLine: '#172c33',
 		cardLineOp: 0.08,
+		cardOp: 0.78,
 		chip: '#172c33',
 		chipOp: 0.06,
+		glow: 0.45,
+		green: 0.1,
+		halo: '#ffffff',
+		haloOp: 0.7,
+		label: 0.5,
+		orbit: '#172c33',
+		orbitOp: 0.18,
+		space: ['#fff6e2', '#f3f8fd', '#e6f1fc'],
+		star: '#1e88fd',
+		starMax: 0.35,
 		sub: '#3d4f5a',
+		text: '#172c33',
 	},
 };
 const LIFT = [-12, 12, -10, 10, -12];
-const CARD_H = 44,
-	CARD_GAP = 50;
+const CARD_GAP = 50,
+	CARD_H = 44;
 
 // A small glass card under each planet, as wide as its contents: face, name, last year's
 // contributions and the current streak. It rides the planet's height, so the row staggers.
 function memberCard(m, k, isMe) {
 	const chipW = (text) => textWidth(text, 10) + 12;
-	const total = fmt(m.total),
-		fire = `🔥 ${m.streak}`,
+	const fire = `🔥 ${m.streak}`,
+		total = fmt(m.total),
 		w1 = chipW(total),
 		w2 = chipW(fire);
 	const w = 42 + Math.max(textWidth(m.name, 12.5), w1 + 4 + w2) + 10,
@@ -393,25 +393,25 @@ function rng(seed) {
 }
 
 function teamSlice(team, i, theme) {
-	const { W, H, sunX, cy } = SCENE,
-		k = SKY[theme],
+	const k = SKY[theme],
+		{ cy, H, sunX, W } = SCENE,
 		tile = W / team.length,
 		x0 = tile * i,
 		x1 = x0 + tile;
 	const placed = team.map((m, j) => {
 		const x = tile * j + tile / 2,
 			y = cy + LIFT[j % LIFT.length];
-		return { ...m, x, y, R: Math.hypot(x - sunX, y - cy) };
+		return { ...m, R: Math.hypot(x - sunX, y - cy), x, y };
 	});
 	const r = rng(7);
 	let stars = '';
 	for (let s = 0; s < 140; s++) {
-		const x = r() * W,
-			y = r() * H,
-			size = 0.35 + r() * 0.95,
+		const delay = -r() * 5,
 			op = 0.25 + r() * k.starMax,
+			size = 0.35 + r() * 0.95,
 			twinkles = r() < 0.22,
-			delay = -r() * 5;
+			x = r() * W,
+			y = r() * H;
 		if (x < x0 - 3 || x > x1 + 3) continue;
 		stars += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${size.toFixed(2)}" fill="${k.star}" opacity="${op.toFixed(2)}"${twinkles ? ` class="tw" style="animation-delay:${delay.toFixed(2)}s"` : ''}/>`;
 	}
@@ -523,10 +523,10 @@ await Promise.all(
 			m.login === LOGIN ? cal : calendar(m.login),
 		]);
 		Object.assign(m, {
-			planetUri: `data:image/png;base64,${planet.toString('base64')}`,
 			avatarUri,
-			total: own.total,
+			planetUri: `data:image/png;base64,${planet.toString('base64')}`,
 			streak: streak(own.days),
+			total: own.total,
 		});
 	}),
 );
