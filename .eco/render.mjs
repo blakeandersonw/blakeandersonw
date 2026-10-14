@@ -97,6 +97,36 @@ function streak(days) {
 	return n;
 }
 
+// This calendar year, Jan 1 to Dec 31: days still ahead are empty, so the forest fills in as the
+// year goes on.
+async function yearCalendar(login) {
+	const now = new Date();
+	const year = now.getUTCFullYear();
+	const data = await github(
+		`query($login: String!, $from: DateTime!, $to: DateTime!) { user(login: $login) {
+      contributionsCollection(from: $from, to: $to) { contributionCalendar {
+      totalContributions weeks { contributionDays { date contributionCount contributionLevel } } } } } }`,
+		{ from: `${year}-01-01T00:00:00Z`, login, to: now.toISOString() },
+	);
+	const cal = data.user.contributionsCollection.contributionCalendar;
+	const known = new Map(cal.weeks.flatMap((w) => w.contributionDays.map((d) => [d.date, d])));
+	const jan1 = Date.UTC(year, 0, 1);
+	const lead = new Date(jan1).getUTCDay();
+	const days = [];
+	for (let i = 0, t = jan1; new Date(t).getUTCFullYear() === year; t += 86_400_000, i++) {
+		const date = new Date(t).toISOString().slice(0, 10);
+		const d = known.get(date);
+		days.push({
+			col: Math.floor((i + lead) / 7),
+			count: d?.contributionCount ?? 0,
+			date,
+			level: LEVELS[d?.contributionLevel] ?? 0,
+			row: (i + lead) % 7,
+		});
+	}
+	return { cols: days.at(-1).col + 1, days, total: cal.totalContributions, year };
+}
+
 // ---- Tree snake -------------------------------------------------------------------------------
 
 // Canopy colours by month, light to shade: winter frost, spring fresh, summer Eco green, autumn sunlight.
@@ -149,7 +179,7 @@ const treeDefs = () =>
 		.join('');
 
 // The snake enters mid-left and always goes for the nearest tree; it eats the forest, which then regrows.
-function snakeSVG({ cols, days, total }, theme) {
+function snakeSVG({ cols, days, total, year }, theme) {
 	const t = THEMES[theme];
 	const S = 15.5,
 		y0 = 20,
@@ -226,14 +256,14 @@ function snakeSVG({ cols, days, total }, theme) {
 	return svg(
 		W,
 		H,
-		`${fmt(total)} contributions in the last year`,
+		`${fmt(total)} contributions in ${year}`,
 		`
     <defs>${treeDefs()}<clipPath id="field"><rect width="${W}" height="${H}" rx="16"/></clipPath></defs>
     <style>${keys}</style>
     <rect width="${W}" height="${H}" rx="16" fill="${t.card}"/>
     <g clip-path="url(#field)">${ground}${trees}${snake}</g>
     <rect x=".5" y=".5" width="${W - 1}" height="${H - 1}" rx="15.5" fill="none" stroke="${t.line}" stroke-opacity="${t.lineOp}"/>
-    <text x="${x0 + 2}" y="${H - 15}" font-size="16" fill="${t.ink}">${fmt(total)} contributions in the last year</text>`,
+    <text x="${x0 + 2}" y="${H - 15}" font-size="16" fill="${t.ink}">${fmt(total)} contributions in ${year}</text>`,
 	);
 }
 
@@ -514,13 +544,13 @@ const team = JSON.parse(await readFile(new URL('team.json', KIT), 'utf8'));
 const socials = Object.entries(profile.socials ?? {}).filter(
 	([key, handle]) => key in SOCIALS && handle !== '',
 );
-const cal = await calendar(LOGIN);
+const cal = await yearCalendar(LOGIN);
 await Promise.all(
 	team.map(async (m) => {
 		const [planet, avatarUri, own] = await Promise.all([
 			readFile(new URL(`planets/${m.planet}.png`, KIT)),
 			dataUri(`https://github.com/${m.login}.png?size=64`),
-			m.login === LOGIN ? cal : calendar(m.login),
+			calendar(m.login),
 		]);
 		Object.assign(m, {
 			avatarUri,
