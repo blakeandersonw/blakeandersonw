@@ -169,7 +169,7 @@ function snakeSVG({ days, cols, total }, theme) {
 		W = 880,
 		x0 = (W - cols * S) / 2,
 		y0 = 20,
-		H = y0 + 7 * S + 38;
+		H = y0 + 7 * S + 46;
 	const center = (c, r) => [x0 + c * S + S / 2, y0 + r * S + S / 2];
 
 	const left = new Map(days.filter((d) => d.count > 0).map((d) => [`${d.col},${d.row}`, d]));
@@ -240,14 +240,14 @@ function snakeSVG({ days, cols, total }, theme) {
 	return svg(
 		W,
 		H,
-		`${fmt(grown.length)} trees grown from ${fmt(total)} contributions`,
+		`${fmt(total)} contributions in the last year`,
 		`
     <defs>${treeDefs()}<clipPath id="field"><rect width="${W}" height="${H}" rx="16"/></clipPath></defs>
     <style>${keys}</style>
     <rect width="${W}" height="${H}" rx="16" fill="${t.card}"/>
     <g clip-path="url(#field)">${ground}${trees}${snake}</g>
     <rect x=".5" y=".5" width="${W - 1}" height="${H - 1}" rx="15.5" fill="none" stroke="${t.line}" stroke-opacity="${t.lineOp}"/>
-    <text x="${x0 + 4}" y="${H - 13}" font-size="13" fill="${t.muted}"><tspan font-weight="650" fill="${t.ink}">${fmt(grown.length)} trees</tspan> grown from ${fmt(total)} contributions</text>`,
+    <text x="${x0 + 2}" y="${H - 15}" font-size="16" fill="${t.ink}">${fmt(total)} contributions in the last year</text>`,
 	);
 }
 
