@@ -48,6 +48,14 @@ async function calendar(login) {
   return { total: cal.totalContributions, days, cols: cal.weeks.length };
 }
 
+// Consecutive days with a contribution, ending today, or yesterday when today has none yet.
+function streak(days) {
+  let i = days.length - 1, n = 0;
+  if (i >= 0 && days[i].count === 0) i--;
+  for (; i >= 0 && days[i].count > 0; i--) n++;
+  return n;
+}
+
 async function dataUri(url, type) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Fetch ${url} failed: ${res.status}`);
@@ -148,7 +156,8 @@ function snakeSVG({ days, cols, total }, theme) {
 function textWidth(text, size) {
   let em = 0;
   for (const ch of text) {
-    if ("ijl.,:;'|!".includes(ch)) em += 0.26;
+    if (ch.codePointAt(0) > 0x2000) em += 1.15;
+    else if ("ijl.,:;'|!".includes(ch)) em += 0.26;
     else if ("ftrI()[]".includes(ch)) em += 0.36;
     else if ("mwMW@".includes(ch)) em += 0.86;
     else if (ch === " ") em += 0.28;
@@ -183,14 +192,33 @@ const applyPill = (theme) => pill(theme, `<circle cx="8" cy="8" r="8" fill="#ffa
 
 // Dark is deep space; light is the same system lit by day. Drawn as one scene, cut into one slice
 // per member so each planet links to its owner.
-const SCENE = { W: 880, H: 240, sunX: -84, cy: 104 };
+const SCENE = { W: 880, H: 248, sunX: -84, cy: 92 };
 const SKY = {
   dark: { space: ["#0b1330", "#070b1d", "#050816"], blue: 0.28, green: 0.14, star: "#fff", starMax: 0.7, glow: 0.35,
-    orbit: "#fff", orbitOp: 0.2, halo: "#9fd0ff", haloOp: 0.18, ring: "#0a1022", text: "#fff", label: 0.55 },
+    orbit: "#fff", orbitOp: 0.2, halo: "#9fd0ff", haloOp: 0.18, text: "#fff", label: 0.55,
+    card: "#ffffff", cardOp: 0.07, cardLine: "#ffffff", cardLineOp: 0.12, chip: "#ffffff", chipOp: 0.1, sub: "#c9d6e3" },
   light: { space: ["#fff6e2", "#f3f8fd", "#e6f1fc"], blue: 0.16, green: 0.1, star: "#1e88fd", starMax: 0.35, glow: 0.45,
-    orbit: "#172c33", orbitOp: 0.18, halo: "#ffffff", haloOp: 0.7, ring: "#ffffff", text: "#172c33", label: 0.5 },
+    orbit: "#172c33", orbitOp: 0.18, halo: "#ffffff", haloOp: 0.7, text: "#172c33", label: 0.5,
+    card: "#ffffff", cardOp: 0.78, cardLine: "#172c33", cardLineOp: 0.08, chip: "#172c33", chipOp: 0.06, sub: "#3d4f5a" },
 };
-const LIFT = [-14, 16, -12, 14, -16];
+const LIFT = [-12, 12, -10, 10, -12];
+const CARD_H = 44, CARD_GAP = 50;
+
+// A small glass card under each planet, as wide as its contents: face, name, last year's
+// contributions and the current streak. It rides the planet's height, so the row staggers.
+function memberCard(m, k, isMe) {
+  const chipW = (text) => textWidth(text, 10) + 12;
+  const total = fmt(m.total), fire = `🔥 ${m.streak}`, w1 = chipW(total), w2 = chipW(fire);
+  const w = 42 + Math.max(textWidth(m.name, 12.5), w1 + 4 + w2) + 10, x = m.x - w / 2, y = m.y + CARD_GAP;
+  const chip = (cx, cw, text) => `<rect x="${cx}" y="${y + 25}" width="${cw}" height="14" rx="7" fill="${k.chip}" fill-opacity="${k.chipOp}"/>
+      <text x="${cx + 6}" y="${y + 35.5}" font-size="10" font-weight="600" fill="${k.sub}" textLength="${cw - 12}" lengthAdjust="spacing">${text}</text>`;
+  return `
+      <clipPath id="face"><circle cx="${x + 23}" cy="${y + 22}" r="13"/></clipPath>
+      <rect x="${x}" y="${y}" width="${w}" height="${CARD_H}" rx="12" fill="${k.card}" fill-opacity="${k.cardOp}" stroke="${k.cardLine}" stroke-opacity="${k.cardLineOp}"/>
+      <image href="${m.avatarUri}" x="${x + 10}" y="${y + 9}" width="26" height="26" clip-path="url(#face)"/>
+      <text x="${x + 42}" y="${y + 18}" font-size="12.5" font-weight="${isMe ? 700 : 600}" fill="${k.text}">${esc(m.name)}</text>
+      ${chip(x + 42, w1, total)}${chip(x + 42 + w1 + 4, w2, fire)}`;
+}
 
 function rng(seed) { return () => (seed = (seed * 16807) % 2147483647) / 2147483647; }
 
@@ -209,9 +237,9 @@ function teamSlice(team, i, theme) {
   }
   const orbits = placed.map(({ R }) => `<circle cx="${sunX}" cy="${cy}" r="${R.toFixed(1)}" fill="none" stroke="${k.orbit}" stroke-opacity="${k.orbitOp}" stroke-dasharray="1.5 6"/>`).join("");
   const m = placed[i], isMe = m.login === LOGIN;
-  const [w, h] = m.planet === "saturn" ? [84, 54] : [58, 58];
+  const [w, h] = m.planet === "saturn" ? [108, 70] : [74, 74];
   const sun = i === 0 ? `<circle class="pulse" cx="${sunX}" cy="${cy}" r="260" fill="url(#glow)"/><circle cx="${sunX}" cy="${cy}" r="132" fill="url(#sun)"/>` : "";
-  const label = i === team.length - 1 ? `<text x="${W - 24}" y="${H - 18}" text-anchor="end" font-size="11" font-weight="650" letter-spacing="2" fill="${k.text}" fill-opacity="${k.label}">THE ECO TEAM</text>` : "";
+  const label = i === team.length - 1 ? `<text x="${W - 24}" y="${H - 12}" text-anchor="end" font-size="10" font-weight="650" letter-spacing="2" fill="${k.text}" fill-opacity="${k.label}">THE ECO TEAM</text>` : "";
   return svg(tile, H, m.name, `
     <defs>
       <linearGradient id="space" x1="0" y1="0" x2="${W}" y2="${H}" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="${k.space[0]}"/><stop offset=".55" stop-color="${k.space[1]}"/><stop offset="1" stop-color="${k.space[2]}"/></linearGradient>
@@ -221,7 +249,6 @@ function teamSlice(team, i, theme) {
       <radialGradient id="glow"><stop offset="0" stop-color="#ffae19" stop-opacity="${k.glow}"/><stop offset="1" stop-color="#ffae19" stop-opacity="0"/></radialGradient>
       <radialGradient id="halo"><stop offset=".55" stop-color="${k.halo}" stop-opacity="${k.haloOp}"/><stop offset="1" stop-color="${k.halo}" stop-opacity="0"/></radialGradient>
       <clipPath id="card"><rect width="${W}" height="${H}" rx="16"/></clipPath>
-      <clipPath id="face"><circle cx="${m.x + 23}" cy="${m.y + 21}" r="14"/></clipPath>
     </defs>
     <style>
       .float { animation: float 7s ease-in-out infinite; }
@@ -237,10 +264,8 @@ function teamSlice(team, i, theme) {
       <g class="float" style="animation-delay:${-i * 1.4}s">
         <circle cx="${m.x}" cy="${m.y}" r="${h * 0.62}" fill="url(#halo)"/>
         <image href="${m.planetUri}" x="${m.x - w / 2}" y="${m.y - h / 2}" width="${w}" height="${h}"/>
-        <circle cx="${m.x + 23}" cy="${m.y + 21}" r="16.5" fill="${k.ring}"/>
-        <image href="${m.avatarUri}" x="${m.x + 9}" y="${m.y + 7}" width="28" height="28" clip-path="url(#face)"/>
-        <text x="${m.x}" y="${m.y + 58}" text-anchor="middle" font-size="13.5" font-weight="${isMe ? 700 : 550}" fill="${k.text}" fill-opacity="${isMe ? 1 : 0.86}">${esc(m.name)}</text>
       </g>
+      ${memberCard(m, k, isMe)}
     </g>
     <rect x=".5" y=".5" width="${W - 1}" height="${H - 1}" rx="15.5" fill="none" stroke="${THEMES[theme].line}" stroke-opacity="${THEMES[theme].lineOp}"/>`,
   `${x0} 0 ${tile} ${H}`);
@@ -282,6 +307,9 @@ const cal = await calendar(LOGIN);
 for (const m of team) {
   m.planetUri = `data:image/png;base64,${(await readFile(new URL(`planets/${m.planet}.png`, KIT))).toString("base64")}`;
   m.avatarUri = await dataUri(`https://github.com/${m.login}.png?size=64`);
+  const { total, days } = m.login === LOGIN ? cal : await calendar(m.login);
+  m.total = total;
+  m.streak = streak(days);
 }
 
 await mkdir(OUT, { recursive: true });
