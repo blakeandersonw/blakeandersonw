@@ -147,21 +147,17 @@ const CANOPY = {
 	11: ['#ffc59a', '#f0743a', '#c24a1e'],
 	12: FROST,
 };
-// The snake wears the trees' spectrum: autumn head, frost body, green tail.
-const SNAKE = [
-	'#e8622c',
-	'#f0743a',
-	'#ff9a2e',
-	'#ffae19',
-	'#ffd27a',
-	'#f4f9fc',
-	'#e3eef4',
-	'#cfe3ec',
-	'#a6ee9c',
-	'#78d86a',
-	'#4ecc54',
-	'#2a9a3a',
-];
+// The snake takes on the colour of what it eats: each tree pulls its body a third of the way toward
+// that tree's canopy, so it blends through the seasons as it crosses the year.
+const SNAKE_LENGTH = 12;
+const EAT_PULL = 0.35;
+const channel = (hex, i) => Number.parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16);
+function mix(from, to, amount) {
+	return `#${[0, 1, 2]
+		.map((i) => Math.round(channel(from, i) + (channel(to, i) - channel(from, i)) * amount))
+		.map((v) => v.toString(16).padStart(2, '0'))
+		.join('')}`;
+}
 
 // One round tree per month in a 20×20 box: soft shadow, trunk, three-lobe canopy lit from the upper left.
 const treeDefs = () =>
@@ -244,12 +240,26 @@ function snakeSVG({ cols, days, total, year }, theme) {
 	const cell = (T * travel) / (steps.length - 1);
 	const edge =
 		t.snakeEdge > 0 ? ` stroke="#172c33" stroke-opacity="${t.snakeEdge}" stroke-width=".8"` : '';
-	const snake = SNAKE.map(
-		(fill, j) => `
-    <circle r="${(5.6 - j * 0.22).toFixed(2)}" fill="${fill}"${edge}>
-      <animateMotion dur="${T.toFixed(2)}s" repeatCount="indefinite" begin="${(j * cell * 0.55).toFixed(3)}s" path="${path}" keyPoints="0;1;1" keyTimes="0;${travel};1" calcMode="linear"/>
-    </circle>`,
-	)
+	let colour = SUMMER[1];
+	const colours = [colour],
+		colourTimes = ['0'];
+	for (const [d, k] of [...eatenAt].toSorted((x, y) => x[1] - y[1])) {
+		colour = mix(colour, CANOPY[+d.date.slice(5, 7)][1], EAT_PULL);
+		colourTimes.push((at(k) / 100).toFixed(4));
+		colours.push(colour);
+	}
+	colourTimes.push('1');
+	colours.push(colour);
+	const fill = `values="${colours.join(';')}" keyTimes="${colourTimes.join(';')}"`;
+	// Each segment trails the head along the path and through its colours by the same delay.
+	const snake = Array.from({ length: SNAKE_LENGTH }, (_, j) => {
+		const begin = `${(j * cell * 0.55).toFixed(3)}s`;
+		return `
+    <circle r="${(5.6 - j * 0.22).toFixed(2)}" fill="${SUMMER[1]}"${edge}>
+      <animateMotion dur="${T.toFixed(2)}s" repeatCount="indefinite" begin="${begin}" path="${path}" keyPoints="0;1;1" keyTimes="0;${travel};1" calcMode="linear"/>
+      <animate attributeName="fill" dur="${T.toFixed(2)}s" repeatCount="indefinite" begin="${begin}" ${fill} calcMode="linear"/>
+    </circle>`;
+	})
 		.toReversed()
 		.join('');
 
@@ -547,16 +557,18 @@ const socials = Object.entries(profile.socials ?? {}).filter(
 const cal = await yearCalendar(LOGIN);
 await Promise.all(
 	team.map(async (m) => {
-		const [planet, avatarUri, own] = await Promise.all([
+		// The year's total matches the forest; the streak counts back from today across New Year.
+		const [planet, avatarUri, rolling, year] = await Promise.all([
 			readFile(new URL(`planets/${m.planet}.png`, KIT)),
 			dataUri(`https://github.com/${m.login}.png?size=64`),
 			calendar(m.login),
+			m.login === LOGIN ? cal : yearCalendar(m.login),
 		]);
 		Object.assign(m, {
 			avatarUri,
 			planetUri: `data:image/png;base64,${planet.toString('base64')}`,
-			streak: streak(own.days),
-			total: own.total,
+			streak: streak(rolling.days),
+			total: year.total,
 		});
 	}),
 );
