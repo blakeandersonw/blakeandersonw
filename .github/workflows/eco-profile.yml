@@ -1,5 +1,6 @@
-# Installed into a member's <login>/<login> repo by scripts/github-profile/install.ts in ecogpt-mono.
-# Redraws the profile images every six hours and whenever profile.json or the kit changes.
+# Installed into a member's <login>/<login> repo by hq/tools/github-profile/install.mjs in
+# EcoGPT/ecogpt-mono. Redraws the profile images every six hours and whenever profile.json or the
+# kit changes.
 name: eco profile
 
 on:
@@ -7,7 +8,6 @@ on:
     - cron: '23 */6 * * *'
   workflow_dispatch:
   push:
-    branches: [main]
     paths: [profile.json, .eco/**, .github/workflows/eco-profile.yml]
 
 permissions:

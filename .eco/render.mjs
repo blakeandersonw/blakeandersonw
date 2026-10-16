@@ -1,7 +1,7 @@
 // Draws an Eco team member's GitHub profile: the README from profile.json, and its images
 // (social pills, the tree snake, the apply button, the team's solar system) in light and dark.
-// Runs in the member's <login>/<login> repo as .eco/render.mjs; `scripts/github-profile/install.ts`
-// copies it there. Node 20+, no dependencies.
+// Runs in the member's <login>/<login> repo as .eco/render.mjs, copied there by
+// hq/tools/github-profile/install.mjs. Node 20+, no dependencies.
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 
 const KIT = new URL('./', import.meta.url);
